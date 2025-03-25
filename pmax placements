@@ -1,0 +1,123 @@
+// Define the URL for the Google Sheet. If left empty, a new sheet will be created.
+const SHEET_URL = 'ENTER SHEET URL';
+
+// TODO: REPLACE 'YOUR_EMAIL_HERE' WITH YOUR ACTUAL EMAIL ADDRESS
+const NOTIFICATION_EMAIL = 'YOUR_EMAIL_HERE';
+
+function main() {
+  // Query for Performance Max campaign placements
+  const queries = {
+    Placements: `
+      SELECT 
+        performance_max_placement_view.display_name, 
+        performance_max_placement_view.placement_type, 
+        performance_max_placement_view.target_url, 
+        campaign.name, 
+        metrics.impressions 
+      FROM performance_max_placement_view 
+      WHERE segments.date DURING LAST_7_DAYS
+        AND metrics.impressions > 0
+        AND performance_max_placement_view.display_name != 'Google Owned & Operated'
+      ORDER BY campaign.name
+    `
+  };
+
+  try {
+    // Get or create the spreadsheet
+    const spreadsheet = getOrCreateSpreadsheet();
+    
+    // Get the first sheet (or create if it doesn't exist)
+    let sheet = spreadsheet.getSheets()[0];
+    if (!sheet) {
+      sheet = spreadsheet.insertSheet('Placements');
+    } else {
+      // Clear the first sheet
+      sheet.clear();
+      sheet.setName('Placements');
+    }
+    
+    // Track results to determine if email notification is needed
+    let totalResults = 0;
+    
+    // Get the account name for the email subject
+    const accountName = AdsApp.currentAccount().getName();
+    
+    // Process queries for both v17 and v18
+    for (const [queryName, query] of Object.entries(queries)) {
+      totalResults += processQuery(query, sheet, 'v17');
+      totalResults += processQuery(query, sheet, 'v18');
+    }
+    
+    // Send email if there are results
+    if (totalResults > 1) {
+      sendNotificationEmail(spreadsheet, totalResults, accountName);
+    }
+    
+    Logger.log('All queries processed successfully.');
+  } catch (error) {
+    Logger.log(`Error in main function: ${error.message}`);
+  }
+}
+
+function getOrCreateSpreadsheet() {
+  if (SHEET_URL && SHEET_URL !== '') {
+    // Use existing sheet if URL is provided
+    return SpreadsheetApp.openByUrl(SHEET_URL);
+  } else {
+    // Create a new spreadsheet if URL is not provided
+    const newSpreadsheet = SpreadsheetApp.create('Pmax Campaigns Placements Report');
+    Logger.log(`New spreadsheet created. URL: ${newSpreadsheet.getUrl()}`);
+    return newSpreadsheet;
+  }
+}
+
+function processQuery(query, sheet, version) {
+  try {
+    Logger.log(`Processing query (${version})`);
+    const report = AdsApp.report(query, { apiVersion: version });
+    
+    // If this is the first query (v17), export directly to the sheet
+    // If it's the second query (v18), append the results
+    const options = {
+      writeMode: (version === 'v17') ? 'WRITE_BLANK' : 'WRITE_APPEND'
+    };
+    
+    // Export the report data to the sheet
+    report.exportToSheet(sheet, options);
+    
+    // Get the number of rows (subtract 1 for header)
+    const rowCount = sheet.getLastRow() - 1;
+    
+    Logger.log(`Query (${version}) completed with ${rowCount} results`);
+    
+    return rowCount;
+  } catch (error) {
+    Logger.log(`Error processing query (${version}): ${error.message}`);
+    return 0;
+  }
+}
+
+function sendNotificationEmail(spreadsheet, resultCount, accountName) {
+  // Only send email if a valid email address is provided
+  if (NOTIFICATION_EMAIL === 'YOUR_EMAIL_HERE') {
+    Logger.log('Email notification skipped. Please replace NOTIFICATION_EMAIL with your actual email.');
+    return;
+  }
+  
+  try {
+    const subject = `Pmax Campaigns Placements Report Generated for ${accountName}`;
+    const body = `A Performance Max Campaigns Placements report has been generated with ${resultCount} total results.\n\n` +
+                 `Spreadsheet URL: ${spreadsheet.getUrl()}\n\n` +
+                 'Please check the attached spreadsheet for placement details.';
+    
+    MailApp.sendEmail({
+      to: NOTIFICATION_EMAIL,
+      subject: subject,
+      body: body
+    });
+    
+    Logger.log('Notification email sent successfully');
+  } catch (error) {
+    Logger.log(`Error sending notification email: ${error.message}`);
+  }
+}
