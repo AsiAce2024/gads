@@ -1,0 +1,198 @@
+function main() {
+  var CAMPAIGN_NAME_CONTAINS = [];
+  // Use this if you only want to look at specific campaigns.
+  // Leave as [] to include all campaigns.
+
+  var CAMPAIGN_NAME_EXCLUDES = [];
+  // Use this if you want to exclude certain campaigns.
+  // Leave as [] to not exclude any campaigns.
+
+  var EMAILS = ['asiacemeir@gmail.com']; 
+  // The email address(es) to receive the hourly update.
+  // For multiple addresses, separate by commas, e.g., ["aa@example.com", "bb@example.com"]
+
+  try {
+    var campaigns = getCampaigns(CAMPAIGN_NAME_CONTAINS, CAMPAIGN_NAME_EXCLUDES);  
+    alert(campaigns, EMAILS);
+  } catch(e) {
+    MailApp.sendEmail(
+      EMAILS.join(','),
+      'Budget Script - Error',
+      'An error occurred: ' + e.toString()
+    );
+  }
+}
+
+function getCampaigns(campNameContains, campNameExcludes) {
+  var campaigns = {};
+  var whereStatementsArray = buildWhereStatements(campNameContains, campNameExcludes);
+  
+  // Get current month's details
+  var today = new Date();
+  var currentMonth = today.getMonth();
+  var currentYear = today.getFullYear();
+  var daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+  var currentDay = today.getDate();
+  
+  for (var i = 0; i < whereStatementsArray.length; i++) {
+    var campaignIterator = AdWordsApp.campaigns()
+      .withCondition(whereStatementsArray[i].replace("WHERE", ""))
+      .get();
+    
+    while (campaignIterator.hasNext()) {
+      var campaign = campaignIterator.next();
+      
+      var budget = campaign.getBudget();
+      
+      // Calculate monthly budget based on daily budget
+      var dailyBudget = budget.getAmount();
+      var monthlyBudget = dailyBudget * daysInMonth;
+      
+      // Get stats for the entire month
+      var monthStats = campaign.getStatsFor("THIS_MONTH");
+      
+      var campaignObj = {
+        name: campaign.getName(),
+        dailyBudget: Math.round(dailyBudget),
+        monthlyBudget: Math.round(monthlyBudget),
+        currentSpend: Math.round(monthStats.getCost()),
+        
+        get expectedBudgetPercentage() {
+          return Math.round((currentDay / daysInMonth) * 100);
+        },
+        
+        get actualBudgetPercentage() {
+          return Math.round(100 * (this.currentSpend / this.monthlyBudget));
+        },
+        
+        get budgetSpendGap() {
+          return Math.round(this.actualBudgetPercentage - this.expectedBudgetPercentage);
+        },
+        
+        get isOverspending() {
+          return this.budgetSpendGap > 10;
+        }
+      };
+      
+      campaigns[campaign.getName()] = campaignObj;
+    }
+  }
+  return campaigns;
+}
+
+function buildWhereStatements(campNameContains, campNameExlcudes) {
+  var whereStatement = "CampaignStatus = 'ENABLED' "; // This ensures only enabled campaigns are selected
+  for (var i = 0; i < campNameExlcudes.length; i++) {
+    whereStatement += "AND CampaignName DOES_NOT_CONTAIN_IGNORE_CASE '" 
+    + campNameExlcudes[i].replace(/"/g,'\\\"') + "' ";
+  }
+  var whereStatementsArray = [];
+  if (campNameContains.length == 0) {
+    whereStatementsArray = [whereStatement];
+  } else {
+    for (var i = 0; i < campNameContains.length; i++) {
+      whereStatementsArray.push(whereStatement + 'AND CampaignName CONTAINS_IGNORE_CASE "' 
+      + campNameContains[i].replace(/"/g,'\\\"') + '" ');
+    }
+  }
+  return whereStatementsArray;
+}
+
+function alert(campaigns, EMAILS) {
+  // Check if any campaign is overspending
+  var isAnyOverspending = Object.values(campaigns).some(campaign => campaign.isOverspending);
+  
+  var subject = AdWordsApp.currentAccount().getName() + " - Monthly Budget Tracking";
+  
+  // Add IMPORTANT to subject if overspending
+  if (isAnyOverspending) {
+    subject = "IMPORTANT - " + subject;
+  }
+  
+  var message = buildTable(campaigns);
+  
+  MailApp.sendEmail({
+    to: EMAILS.join(','), 
+    subject: subject,
+    htmlBody: message
+  });
+}
+
+function buildTable(campaigns) {
+  // If no campaigns, return a message
+  if (Object.keys(campaigns).length === 0) {
+    return "<p>No active campaigns to report.</p>";
+  }
+
+  // Initialize totals
+  var totals = {
+    dailyBudget: 0,
+    monthlyBudget: 0,
+    currentSpend: 0,
+    actualBudgetPercentage: 0,
+    expectedBudgetPercentage: 0,
+    budgetSpendGap: 0
+  };
+
+  var table = "<table border=1 style='border: 1px solid black; border-collapse: collapse;'>";
+  table += "<tr>" +
+    "<th style='text-align:center'>Campaign Name</th>" +
+    "<th style='text-align:center'>Daily Budget</th>" +
+    "<th style='text-align:center'>Monthly Budget</th>" +
+    "<th style='text-align:center'>Current Spend</th>" +
+    "<th style='text-align:center'>Percent of Budget Spent</th>" +
+    "<th style='text-align:center'>Expected Budget %</th>" +
+    "<th style='text-align:center'>Budget Spend Gap</th>" +
+    "</tr>";
+  
+  for (var campaignName in campaigns) { 
+    var campaign = campaigns[campaignName];
+    
+    // Accumulate totals
+    totals.dailyBudget += campaign.dailyBudget;
+    totals.monthlyBudget += campaign.monthlyBudget;
+    totals.currentSpend += campaign.currentSpend;
+    totals.actualBudgetPercentage += campaign.actualBudgetPercentage;
+    totals.expectedBudgetPercentage += campaign.expectedBudgetPercentage;
+    totals.budgetSpendGap += campaign.budgetSpendGap;
+
+    // Define row style based on overspending
+    var rowStyle = campaign.isOverspending 
+      ? "background-color: #FFCCCB;" // Light red for overspending
+      : "";
+
+    table += "<tr style='" + rowStyle + "'>" +
+      "<td style='text-align:center'>" + campaign.name + "</td>" +
+      "<td style='text-align:center'>" + campaign.dailyBudget + "</td>" +
+      "<td style='text-align:center'>" + campaign.monthlyBudget + "</td>" +
+      "<td style='text-align:center'>" + campaign.currentSpend + "</td>" +
+      "<td style='text-align:center'>" + campaign.actualBudgetPercentage + "%</td>" +
+      "<td style='text-align:center'>" + campaign.expectedBudgetPercentage + "%</td>" +
+      "<td style='text-align:center'>" + campaign.budgetSpendGap + "%</td>" +
+      "</tr>";
+  }
+
+  // Calculate average percentages
+  var campaignCount = Object.keys(campaigns).length;
+  
+  // Only add totals row if there are campaigns
+  if (campaignCount > 0) {
+    totals.actualBudgetPercentage = Math.round(totals.actualBudgetPercentage / campaignCount);
+    totals.expectedBudgetPercentage = Math.round(totals.expectedBudgetPercentage / campaignCount);
+    totals.budgetSpendGap = Math.round(totals.budgetSpendGap / campaignCount);
+
+    // Add totals row
+    table += "<tr style='font-weight:bold; background-color:#f0f0f0'>" +
+      "<td style='text-align:center'>TOTAL</td>" +
+      "<td style='text-align:center'>" + totals.dailyBudget + "</td>" +
+      "<td style='text-align:center'>" + totals.monthlyBudget + "</td>" +
+      "<td style='text-align:center'>" + totals.currentSpend + "</td>" +
+      "<td style='text-align:center'>" + totals.actualBudgetPercentage + "%</td>" +
+      "<td style='text-align:center'>" + totals.expectedBudgetPercentage + "%</td>" +
+      "<td style='text-align:center'>" + totals.budgetSpendGap + "%</td>" +
+      "</tr>";
+  }
+
+  table += "</table>";
+  return table;
+}
