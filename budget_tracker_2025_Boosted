@@ -1,0 +1,170 @@
+/**
+ * Google Ads Budget Tracking Script
+ * 
+ * This script tracks the monthly cost of a Google Ads account and updates it to a Google Sheet.
+ * It updates account name, current cost, calculates ideal spent percentage, actual percentage,
+ * and the gap between them. Sends email alerts if the gap is higher than +10%.
+ * MAKE SURE TO FILL IN THE DESIRED MONTHLY BUDGET ON COLUMN B
+ */
+
+// Configuration
+var CONFIG = {
+  // The spreadsheet URL where budget data will be stored and tracked
+  SPREADSHEET_URL: "",
+  
+  // Sheet name in the spreadsheet
+  SHEET_NAME: "sheet1",
+  
+  // Row where data should be updated (usually 2 for the first data row after headers)
+  DATA_ROW: 2,
+  
+  // Email address(es) to receive alerts (separate multiple emails with commas)
+  EMAILS: ["insertemail"],
+  
+  // Threshold to determine overspending (percentage gap above ideal)
+  OVERSPENDING_THRESHOLD: 10
+};
+
+/**
+ * Main function that will be executed by Google Ads
+ */
+function main() {
+  try {
+    // Get account information
+    var account = AdWordsApp.currentAccount();
+    var accountName = account.getName();
+    
+    // Calculate date information
+    var today = new Date();
+    var firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    var lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    var totalDaysInMonth = lastDayOfMonth.getDate();
+    var daysPassed = today.getDate();
+    
+    // Calculate ideal percentage of budget that should be spent based on days passed
+    var idealPercentage = (daysPassed / totalDaysInMonth) * 100;
+    
+    // Get account statistics for the current month
+    var stats = account.getStatsFor(
+      formatDateForAdWords(firstDayOfMonth),
+      formatDateForAdWords(today)
+    );
+    
+    // Get the total cost for the month so far
+    var monthlyCost = stats.getCost();
+    
+    // Access the Google Sheet
+    var spreadsheet = SpreadsheetApp.openByUrl(CONFIG.SPREADSHEET_URL);
+    var sheet = spreadsheet.getSheetByName(CONFIG.SHEET_NAME);
+    
+    // Get the budget from the spreadsheet (Column B - Monthly Budget)
+    var monthlyBudget = sheet.getRange("B" + CONFIG.DATA_ROW).getValue();
+    
+    // Calculate actual percentage spent
+    var actualPercentage = (monthlyCost / monthlyBudget) * 100;
+    
+    // Calculate gap between actual and ideal percentage
+    var gap = actualPercentage - idealPercentage;
+    
+    // Update the spreadsheet
+    sheet.getRange("A" + CONFIG.DATA_ROW).setValue(accountName);     // Account Name
+    sheet.getRange("C" + CONFIG.DATA_ROW).setValue(monthlyCost);     // Current Cost
+    sheet.getRange("D" + CONFIG.DATA_ROW).setValue(Math.round(idealPercentage) + "%"); // Ideal Spent % (rounded)
+    sheet.getRange("E" + CONFIG.DATA_ROW).setValue(Math.round(actualPercentage) + "%"); // Actual % (rounded)
+    sheet.getRange("F" + CONFIG.DATA_ROW).setValue(Math.round(gap) + "%");  // Gap (rounded)
+    
+    // If gap is higher than threshold percentage, send an alert
+    if (gap > CONFIG.OVERSPENDING_THRESHOLD) {
+      sendOverspendingAlert(
+        accountName,
+        monthlyCost,
+        monthlyBudget,
+        actualPercentage,
+        idealPercentage,
+        gap
+      );
+    }
+    
+    Logger.log("Budget tracking completed successfully.");
+    
+  } catch (e) {
+    // Send error notification
+    var errorMessage = "Error in Budget Tracking script: " + e.toString();
+    Logger.log(errorMessage);
+    MailApp.sendEmail(
+      CONFIG.EMAILS.join(","),
+      "ERROR - Google Ads Budget Tracking Script",
+      errorMessage
+    );
+  }
+}
+
+/**
+ * Formats a date object to YYYYMMDD format required by AdWords API
+ */
+function formatDateForAdWords(dateObj) {
+  var year = dateObj.getFullYear();
+  var month = (dateObj.getMonth() + 1).toString().padStart(2, '0');
+  var day = dateObj.getDate().toString().padStart(2, '0');
+  return year + month + day;
+}
+
+/**
+ * Sends an email alert when budget is overspent beyond the threshold
+ */
+function sendOverspendingAlert(accountName, cost, budget, actualPercent, idealPercent, gap) {
+  var subject = "⚠️ BUDGET ALERT - Google Ads Account Overspending: " + accountName;
+  
+  // Calculate recommended budget adjustment
+  var daysRemaining = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate() - new Date().getDate();
+  var totalDaysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+  var budgetSpent = cost;
+  var budgetRemaining = budget - budgetSpent;
+  
+  // Calculate what the daily budget should be for the rest of the month
+  var recommendedDailyBudget = budgetRemaining / daysRemaining;
+  
+  // Calculate current average daily spend
+  var currentDailyAverage = budgetSpent / (totalDaysInMonth - daysRemaining);
+  
+  // Calculate by how much the daily budget should be decreased
+  var decreasePercentage = Math.round(100 - ((recommendedDailyBudget / currentDailyAverage) * 100));
+  
+  var message = "BUDGET ALERT: Your Google Ads account \"" + accountName + "\" is overspending.\n\n" +
+                "Account: " + accountName + "\n" +
+                "Current spending: " + formatCurrency(cost) + "\n" +
+                "Monthly budget: " + formatCurrency(budget) + "\n" +
+                "Ideal percentage at this point: " + Math.round(idealPercent) + "%\n" +
+                "Actual percentage spent: " + Math.round(actualPercent) + "%\n" +
+                "Gap: +" + Math.round(gap) + "%\n\n" +
+                "RECOMMENDED ACTION:\n" +
+                "---------------------------------------------\n" +
+                "To stay within your monthly budget of " + formatCurrency(budget) + ", you should:\n\n" +
+                "• Decrease your daily budget by approximately " + decreasePercentage + "%\n" +
+                "• Current average daily spend: " + formatCurrency(currentDailyAverage) + "\n" +
+                "• Recommended daily budget for the remaining " + daysRemaining + " days: " + formatCurrency(recommendedDailyBudget) + "\n" +
+                "---------------------------------------------\n\n" +
+                "Please review your account and make necessary adjustments to control spending.\n\n" +
+                "This alert was generated on " + new Date().toLocaleString() + ".";
+  
+  MailApp.sendEmail(
+    CONFIG.EMAILS.join(","),
+    subject,
+    message
+  );
+  
+  Logger.log("Overspending alert sent.");
+}
+
+/**
+ * Formats a number as currency with commas for thousands and no decimals
+ */
+function formatCurrency(amount) {
+  // Round to remove decimals and convert to string
+  var roundedAmount = Math.round(amount).toString();
+  
+  // Add commas for thousands
+  var formattedAmount = roundedAmount.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  
+  return "$" + formattedAmount;
+}
